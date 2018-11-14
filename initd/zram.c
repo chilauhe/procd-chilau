@@ -20,13 +20,13 @@
 #define ZRAM_MOD_PATH "/lib/modules/%s/zram.ko"
 #define EXT4_MOD_PATH "/lib/modules/%s/ext4.ko"
 
-static long
+static unsigned long
 proc_meminfo(void)
 {
 	FILE *fp;
 	char line[256];
 	char *key;
-	long val = KB(16);
+	long val = KB(8);
 
 	fp = fopen("/proc/meminfo", "r");
 	if (fp == NULL) {
@@ -42,9 +42,6 @@ proc_meminfo(void)
 		break;
 	}
 	fclose(fp);
-
-	if (val > KB(32))
-		val = KB(32);
 
 	return val;
 }
@@ -82,7 +79,7 @@ early_insmod(char *module)
 int
 mount_zram_on_tmp(void)
 {
-	char *mkfs[] = { "/usr/sbin/mkfs.ext4", "-b", "4096", "-F", "-L", "TEMP", "-m", "0", "/dev/zram0", NULL };
+	char *mkfs[] = { "/usr/sbin/mkfs.ext4", "-b", "4096", "-F", "-L", "TEMP", "-m", "0", "-O", "uninit_bg,sparse_super,^has_journal", "/dev/zram0", NULL };
 	FILE *fp;
 	long zramsize;
 	pid_t pid;
@@ -95,7 +92,17 @@ mount_zram_on_tmp(void)
 
 	mkdev("*", 0600);
 
-	zramsize = proc_meminfo() / 2;
+	zramsize = proc_meminfo();
+	//memory size >= 64M takes more memory, otherwise keep original policy.
+	//const value of memsize reduced a little to match real devices.
+	if(zramsize > 57UL*1000*1000){	
+		zramsize /= 3;
+	}else if(zramsize > 28UL*1000*1000){
+		zramsize = KB(16);
+	}else{
+		zramsize /= 2;	
+	}
+
 	fp = fopen("/sys/block/zram0/disksize", "r+");
 	if (fp == NULL) {
 		ERROR("Can't open /sys/block/zram0/disksize: %m\n");
@@ -116,7 +123,7 @@ mount_zram_on_tmp(void)
 		waitpid(pid, NULL, 0);
 	}
 
-	ret = mount("/dev/zram0", "/tmp", "ext4", MS_NOSUID | MS_NODEV | MS_NOATIME, "errors=continue,noquota");
+	ret = mount("/dev/zram0", "/tmp", "ext4", MS_NOSUID | MS_NODEV | MS_NOATIME, "errors=continue,nobarrier");
 	if (ret < 0) {
 		ERROR("Can't mount /dev/zram0 on /tmp: %m\n");
 		return errno;
